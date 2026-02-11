@@ -106,7 +106,7 @@ namespace KitbasherEditor.ViewModels.MenuBarViews
             var fileToolbar = builder.CreateRootToolBar("File");
             builder.CreateToolBarItem<SaveCommand>(fileToolbar, "Save");
             builder.CreateToolBarItem<SaveAsCommand>(fileToolbar, "Save As");
-            builder.CreateToolBarItem<QuickExportPosedMeshCommand>(fileToolbar, "Quick Export as OBJ");
+            builder.CreateToolBarItem<QuickExportPosedMeshCommand>(fileToolbar, "Advanced Export (Current Frame)");
             builder.CreateToolBarSeparator(fileToolbar);
             builder.CreateToolBarItem<BrowseForReferenceCommand>(fileToolbar, "Import Reference model");
 
