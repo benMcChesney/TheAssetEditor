@@ -10,6 +10,7 @@ using Editors.ImportExport.Exporting.Presentation.DdsToMaterialPng;
 using Editors.ImportExport.Exporting.Presentation.DdsToNormalPng;
 using Editors.ImportExport.Exporting.Presentation.DdsToPng;
 using Editors.ImportExport.Exporting.Presentation.RmvToGltf;
+using Editors.ImportExport.Exporting.Presentation.RmvToObj;
 using Editors.ImportExport.Importing;
 using Editors.ImportExport.Importing.Importers.GltfToRmv;
 using Editors.ImportExport.Importing.Importers.GltfToRmv.Helper;
@@ -33,12 +34,14 @@ namespace Editors.ImportExport
             services.AddTransient<IExporterViewModel, DdsToMaterialPngViewModel>();
             services.AddTransient<IExporterViewModel, DdsToNormalPngViewModel>();
             services.AddTransient<IExporterViewModel, RmvToGltfExporterViewModel>();
+            services.AddTransient<IExporterViewModel, RmvToObjExporterViewModel>();
 
             // Exporters
             services.AddTransient<IDdsToMaterialPngExporter, DdsToMaterialPngExporter>();
             services.AddTransient<DdsToPngExporter>();
             services.AddTransient<IDdsToNormalPngExporter, DdsToNormalPngExporter>();
             services.AddTransient<RmvToGltfExporter>();
+            services.AddTransient<RmvToObjExporter>();
 
             // Importer ViewModels
             RegisterWindow<ImportWindow>(services);
