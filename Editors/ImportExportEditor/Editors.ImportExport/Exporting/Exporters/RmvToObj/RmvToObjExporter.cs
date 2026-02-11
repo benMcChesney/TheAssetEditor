@@ -147,11 +147,11 @@ namespace Editors.ImportExport.Exporting.Exporters
                 {
                     try
                     {
-                        var normalMapPath = ExportNormalMapAndCreateDisplacementMap(normalTexture, outputDir, meshIndex);
+                        var normalMapPath = ExportNormalMapAndCreateDisplacementMap(normalTexture, outputDir, rmvModel.Material.ModelName, meshIndex);
                         if (!string.IsNullOrEmpty(normalMapPath))
                         {
                             var normalFileName = Path.GetFileName(normalMapPath);
-                            var displacementFileName = Path.Combine(outputDir, 
+                            var displacementFileName = Path.Combine(outputDir,
                                 Path.GetFileNameWithoutExtension(normalMapPath) + "_displacement.png");
                             var displacementFileNameOnly = Path.GetFileName(displacementFileName);
 
@@ -164,18 +164,19 @@ namespace Editors.ImportExport.Exporting.Exporters
                         _logger.Warning(ex, "Failed to export normal map for mesh {MeshIndex}", meshIndex);
                     }
                 }
-
-                var diffuseTexture = rmvModel.Material.GetTexture(TextureType.Diffuse) ?? 
+                var diffuseTexture = rmvModel.Material.GetTexture(TextureType.Diffuse) ??
                                      rmvModel.Material.GetTexture(TextureType.BaseColour);
                 if (diffuseTexture != null)
                 {
                     try
                     {
-                        var diffuseMapPath = ExportDiffuseMap(diffuseTexture, outputDir, meshIndex);
+                        var diffuseMapPath = ExportDiffuseMap(diffuseTexture, outputDir, rmvModel.Material.ModelName, meshIndex);
                         if (!string.IsNullOrEmpty(diffuseMapPath))
                         {
                             var diffuseFileName = Path.GetFileName(diffuseMapPath);
                             sb.AppendLine($"map_Kd {diffuseFileName}");
+                            // Also set Kd to use the diffuse texture color
+                            sb.AppendLine($"Kd 1.0 1.0 1.0");
                         }
                     }
                     catch (Exception ex)
@@ -191,7 +192,7 @@ namespace Editors.ImportExport.Exporting.Exporters
             File.WriteAllText(mtlPath, sb.ToString(), Encoding.UTF8);
         }
 
-        private string ExportNormalMapAndCreateDisplacementMap(RmvTexture? texture, string outputDir, int meshIndex)
+        private string ExportNormalMapAndCreateDisplacementMap(RmvTexture? texture, string outputDir, string meshName, int meshIndex)
         {
             if (!texture.HasValue)
                 return null;
@@ -199,7 +200,7 @@ namespace Editors.ImportExport.Exporting.Exporters
             try
             {
                 // Create temporary path for PNG export
-                var normalMapFileName = $"mesh_{meshIndex}_normal.png";
+                var normalMapFileName = $"{meshName}_normal.png";
                 var normalMapPath = Path.Combine(outputDir, normalMapFileName);
 
                 // Export DDS to PNG using existing exporter
@@ -228,14 +229,14 @@ namespace Editors.ImportExport.Exporting.Exporters
             return null;
         }
 
-        private string ExportDiffuseMap(RmvTexture? texture, string outputDir, int meshIndex)
+        private string ExportDiffuseMap(RmvTexture? texture, string outputDir, string meshName, int meshIndex)
         {
             if (!texture.HasValue)
                 return null;
 
             try
             {
-                var diffuseMapFileName = $"mesh_{meshIndex}_diffuse.png";
+                var diffuseMapFileName = $"{meshName}_diffuse.png";
                 var diffuseMapPath = Path.Combine(outputDir, diffuseMapFileName);
 
                 // Export DDS to PNG using existing exporter
@@ -254,8 +255,10 @@ namespace Editors.ImportExport.Exporting.Exporters
         /// Converts a normal map to a height/displacement map.
         /// Extracts the Z component (blue channel) from the normal map to create height data.
         /// </summary>
-        private Bitmap ConvertNormalMapToHeightMap(Bitmap normalMap)
+        private Bitmap ConvertNormalMapToHeightMap(Bitmap normalMap, float strength = 0.5f, float contrast = 0.0f, int blurRadius = 0)
         {
+            // Strength controls how strongly the normal's Z axis affects height (0..1)
+            // Contrast adjusts the final curve (-1..1)
             var heightMap = new Bitmap(normalMap.Width, normalMap.Height);
 
             for (int y = 0; y < normalMap.Height; y++)
@@ -263,17 +266,85 @@ namespace Editors.ImportExport.Exporting.Exporters
                 for (int x = 0; x < normalMap.Width; x++)
                 {
                     var normal = normalMap.GetPixel(x, y);
-                    
-                    // Extract Z component (blue channel) as height
-                    byte heightValue = normal.B;
 
-                    // Create grayscale height map (same value for R, G, B)
+                    // Use luminance of the normal as a simpler proxy for displacement
+                    // (weights: Rec. 601) and remap around mid-gray with strength.
+                    float r = normal.R / 255f;
+                    float g = normal.G / 255f;
+                    float b = normal.B / 255f;
+                    float lum = 0.299f * r + 0.587f * g + 0.114f * b;
+
+                    // Remap so that 0.5 -> mid-gray baseline, and apply strength
+                    float h = (lum - 0.5f) * strength + 0.5f;
+
+                    // Apply simple contrast tweak: contrast in [-1,1]
+                    if (Math.Abs(contrast) > 0.0001f)
+                    {
+                        h = 0.5f + (h - 0.5f) * (1f + contrast);
+                    }
+
+                    // Clamp and convert
+                    h = MathF.Min(1f, MathF.Max(0f, h));
+                    byte heightValue = (byte)(h * 255f);
+
                     var heightColor = Color.FromArgb(normal.A, heightValue, heightValue, heightValue);
                     heightMap.SetPixel(x, y, heightColor);
                 }
             }
 
+            // Optional simple box blur (if requested)
+            if (blurRadius > 0)
+            {
+                return BoxBlur(heightMap, blurRadius);
+            }
+
             return heightMap;
+        }
+
+        // Very small and simple box blur implementation (separable) to avoid external deps
+        private Bitmap BoxBlur(Bitmap src, int radius)
+        {
+            var w = src.Width;
+            var h = src.Height;
+            var tmp = new Bitmap(w, h);
+
+            // horizontal pass
+            for (int y = 0; y < h; y++)
+            {
+                for (int x = 0; x < w; x++)
+                {
+                    int r = 0, g = 0, b = 0, a = 0, count = 0;
+                    for (int k = -radius; k <= radius; k++)
+                    {
+                        int sx = x + k;
+                        if (sx < 0 || sx >= w) continue;
+                        var c = src.GetPixel(sx, y);
+                        r += c.R; g += c.G; b += c.B; a += c.A; count++;
+                    }
+                    tmp.SetPixel(x, y, Color.FromArgb(a / Math.Max(1, count), r / Math.Max(1, count), g / Math.Max(1, count), b / Math.Max(1, count)));
+                }
+            }
+
+            var dst = new Bitmap(w, h);
+            // vertical pass
+            for (int x = 0; x < w; x++)
+            {
+                for (int y = 0; y < h; y++)
+                {
+                    int r = 0, g = 0, b = 0, a = 0, count = 0;
+                    for (int k = -radius; k <= radius; k++)
+                    {
+                        int sy = y + k;
+                        if (sy < 0 || sy >= h) continue;
+                        var c = tmp.GetPixel(x, sy);
+                        r += c.R; g += c.G; b += c.B; a += c.A; count++;
+                    }
+                    dst.SetPixel(x, y, Color.FromArgb(a / Math.Max(1, count), r / Math.Max(1, count), g / Math.Max(1, count), b / Math.Max(1, count)));
+                }
+            }
+
+            tmp.Dispose();
+            return dst;
         }
     }
 

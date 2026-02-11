@@ -14,6 +14,8 @@ using Shared.Core.Misc;
 using Shared.Core.PackFiles;
 using Shared.Core.PackFiles.Models;
 using Shared.Ui.Common.MenuSystem;
+using Shared.GameFormats.RigidModel;
+using Shared.Ui.BaseDialogs.PackFileTree.ContextMenu.External; // <- added
 using MessageBox = System.Windows.MessageBox;
 
 namespace Editors.KitbasherEditor.UiCommands
@@ -82,11 +84,20 @@ namespace Editors.KitbasherEditor.UiCommands
                 var lod0 = root.GetLodNodes()[0];
                 lod0.AddObject(groupNodeContainer);
 
+                // Hide originals while we create posed copies so they are not included in the save
+                var originalVisibility = new Dictionary<Rmv2MeshNode, bool>();
                 foreach (var meshNode in selectedMeshNodes)
                 {
-                    var cpy = SceneNodeHelper.CloneNode(meshNode);
-                    groupNodeContainer.AddObject(cpy);
-                    meshes.Add(cpy);
+                    originalVisibility[meshNode] = meshNode.IsVisible;
+                    meshNode.IsVisible = false;
+
+                    var cpy = SceneNodeHelper.CloneNode(meshNode) as Rmv2MeshNode;
+                    if (cpy != null)
+                    {
+                        cpy.IsVisible = true;
+                        groupNodeContainer.AddObject(cpy);
+                        meshes.Add(cpy);
+                    }
                 }
 
                 // Step 2: Pose the meshes at the current animation frame
@@ -101,9 +112,32 @@ namespace Editors.KitbasherEditor.UiCommands
                 // Update save settings with temp path
                 _saveSettings.OutputName = tempPath;
 
-                var saveResult = _saveService.Save(root, _saveSettings);
-                if (saveResult is null || !File.Exists(tempPath))
+                // Temporarily replace LOD children so only the posed group is saved
+                var lodNodes = root.GetLodNodes();
+                var originalLodChildren = new Dictionary<Rmv2LodNode, List<ISceneNode>>();
+                foreach (var lod in lodNodes)
                 {
+                    originalLodChildren[lod] = new List<ISceneNode>(lod.Children);
+                    lod.Children.Clear();
+                }
+
+                // Add posed group to lod0 for saving
+                if (lodNodes.Count > 0)
+                    lodNodes[0].AddObject(groupNodeContainer);
+
+                var saveResult = _saveService.Save(root, _saveSettings);
+                if (saveResult is null || saveResult.Status == false)
+                {
+                    // Restore LOD children before returning
+                    foreach (var kv in originalLodChildren)
+                    {
+                        var lod = kv.Key;
+                        var list = kv.Value;
+                        lod.Children.Clear();
+                        foreach (var child in list)
+                            lod.AddObject(child);
+                    }
+
                     MessageBox.Show("Failed to save posed mesh");
                     return;
                 }
@@ -111,8 +145,30 @@ namespace Editors.KitbasherEditor.UiCommands
                 // Step 4: Create a PackFile from the temporary file and export
                 try
                 {
-                    var posedPackFile = new PackFile(Path.GetFileName(tempPath),
-                        new MemoryPackFileDataSource(File.ReadAllBytes(tempPath)));
+                    // If the save returned an in-memory RmvFile, serialize that; otherwise read the file bytes
+                    byte[] fileBytes;
+                    if (saveResult.GeneratedMesh != null)
+                    {
+                        // Serialize RmvFile to bytes
+                        fileBytes = ModelFactory.Create().Save(saveResult.GeneratedMesh);
+                    }
+                    else if (!string.IsNullOrWhiteSpace(saveResult.GeneratedMeshPath) && File.Exists(saveResult.GeneratedMeshPath))
+                    {
+                        fileBytes = File.ReadAllBytes(saveResult.GeneratedMeshPath);
+                    }
+                    else
+                    {
+                        // Fallback: try reading tempPath if it exists
+                        if (File.Exists(tempPath))
+                            fileBytes = File.ReadAllBytes(tempPath);
+                        else
+                        {
+                            MessageBox.Show("Unable to obtain generated mesh bytes for export");
+                            return;
+                        }
+                    }
+
+                    var posedPackFile = PackFile.CreateFromBytes(Path.GetFileName(tempPath), fileBytes);
 
                     _exportFileContextMenuHelper.ShowDialog(posedPackFile);
 
@@ -125,6 +181,28 @@ namespace Editors.KitbasherEditor.UiCommands
                     catch
                     {
                         // Ignore cleanup errors
+                    }
+                    finally
+                    {
+                        // Restore original visibility and remove the temporary posed group
+                        foreach (var kv in originalVisibility)
+                        {
+                            kv.Key.IsVisible = kv.Value;
+                        }
+
+                        // Remove posed group from scene
+                        var parent = groupNodeContainer.Parent;
+                        if (parent != null)
+                            parent.RemoveObject(groupNodeContainer);
+                        // Restore original LOD children
+                        foreach (var kv in originalLodChildren)
+                        {
+                            var lod = kv.Key;
+                            var list = kv.Value;
+                            lod.Children.Clear();
+                            foreach (var child in list)
+                                lod.AddObject(child);
+                        }
                     }
                 }
                 catch (Exception ex)
