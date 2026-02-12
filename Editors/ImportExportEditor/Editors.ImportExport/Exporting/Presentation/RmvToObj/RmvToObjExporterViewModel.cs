@@ -2,11 +2,10 @@
 using Editors.ImportExport.Exporting.Exporters;
 using Editors.ImportExport.Misc;
 using Shared.Core.PackFiles.Models;
-using Shared.Ui.Common.DataTemplates;
 
 namespace Editors.ImportExport.Exporting.Presentation.RmvToObj
 {
-    internal partial class RmvToObjExporterViewModel : ObservableObject, IExporterViewModel
+    internal partial class RmvToObjExporterViewModel : ObservableObject, Editors.ImportExport.Exporting.Exporters.IExporterViewModel
     {
         private readonly RmvToObjExporter _exporter;
 
@@ -18,21 +17,11 @@ namespace Editors.ImportExport.Exporting.Presentation.RmvToObj
             _exporter = exporter;
         }
 
-        public ExportSupportEnum CanExportFile(PackFile file)
-        {
-            var name = file.Name.ToLower();
-            if (name.EndsWith(".rigidmodel") || name.EndsWith(".rmv2") || name.EndsWith(".rigid_model_v2"))
-                return ExportSupportEnum.HighPriority;
-            return ExportSupportEnum.NotSupported;
-        }
+        public ExportSupportEnum CanExportFile(PackFile file) => _exporter.CanExportFile(file);
 
         public void Execute(PackFile exportSource, string outputPath, bool generateImporter)
         {
-            var settings = new RmvToObjExporterSettings 
-            { 
-                InputModelFile = exportSource, 
-                OutputPath = outputPath 
-            };
+            var settings = new RmvToObjExporterSettings { InputModelFile = exportSource, OutputPath = outputPath };
             _exporter.Export(settings);
         }
     }

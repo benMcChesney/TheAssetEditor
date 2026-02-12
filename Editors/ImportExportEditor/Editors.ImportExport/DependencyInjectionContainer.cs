@@ -41,7 +41,10 @@ namespace Editors.ImportExport
             services.AddTransient<DdsToPngExporter>();
             services.AddTransient<IDdsToNormalPngExporter, DdsToNormalPngExporter>();
             services.AddTransient<RmvToGltfExporter>();
-            services.AddTransient<RmvToObjExporter>();
+            services.AddTransient(sp => new RmvToObjExporter(
+                sp.GetRequiredService<IDdsToNormalPngExporter>(),
+                sp.GetRequiredService<IDdsToMaterialPngExporter>()
+            ));
 
             // Importer ViewModels
             RegisterWindow<ImportWindow>(services);
