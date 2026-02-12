@@ -11,6 +11,7 @@ using Shared.Core.ErrorHandling;
 using Shared.Core.PackFiles.Models;
 using System.Drawing;
 using System.Drawing.Imaging;
+using System.Drawing.Drawing2D;
 
 namespace Editors.ImportExport.Exporting.Exporters
 {
@@ -157,6 +158,10 @@ namespace Editors.ImportExport.Exporting.Exporters
 
                             sb.AppendLine($"map_bump {normalFileName}");
                             sb.AppendLine($"disp {displacementFileNameOnly}");
+
+                            // Re-encode exported normal and displacement to high-quality PNG
+                            try { EnsurePngHighQuality(normalMapPath); } catch { }
+                            try { if (File.Exists(displacementFileName)) EnsurePngHighQuality(displacementFileName); } catch { }
                         }
                     }
                     catch (Exception ex)
@@ -164,6 +169,7 @@ namespace Editors.ImportExport.Exporting.Exporters
                         _logger.Warning(ex, "Failed to export normal map for mesh {MeshIndex}", meshIndex);
                     }
                 }
+
                 var diffuseTexture = rmvModel.Material.GetTexture(TextureType.Diffuse) ??
                                      rmvModel.Material.GetTexture(TextureType.BaseColour);
                 if (diffuseTexture != null)
@@ -173,10 +179,32 @@ namespace Editors.ImportExport.Exporting.Exporters
                         var diffuseMapPath = ExportDiffuseMap(diffuseTexture, outputDir, rmvModel.Material.ModelName, meshIndex);
                         if (!string.IsNullOrEmpty(diffuseMapPath))
                         {
+                            // If there's a mask texture or skin mask, export it and premultiply into diffuse alpha
+                            var maskTex = rmvModel.Material.GetTexture(TextureType.Mask) ?? rmvModel.Material.GetTexture(TextureType.Skin_mask);
+                            if (maskTex != null)
+                            {
+                                try
+                                {
+                                    var maskPath = _ddsToMaterialPngExporter.Export(maskTex.Value.Path, Path.Combine(outputDir, rmvModel.Material.ModelName + "_mask.png"), false);
+                                    if (!string.IsNullOrEmpty(maskPath) && File.Exists(maskPath) && File.Exists(diffuseMapPath))
+                                    {
+                                        var premultPath = Path.Combine(outputDir, Path.GetFileNameWithoutExtension(diffuseMapPath) + "_premult.png");
+                                        PremultiplyDiffuseWithMask(diffuseMapPath, maskPath, premultPath);
+                                        diffuseMapPath = premultPath;
+                                    }
+                                }
+                                catch (Exception ex)
+                                {
+                                    _logger.Here().Warning(ex, "Failed to export or apply mask for mesh {MeshIndex}", meshIndex);
+                                }
+                            }
+
                             var diffuseFileName = Path.GetFileName(diffuseMapPath);
                             sb.AppendLine($"map_Kd {diffuseFileName}");
                             // Also set Kd to use the diffuse texture color
                             sb.AppendLine($"Kd 1.0 1.0 1.0");
+
+                            try { EnsurePngHighQuality(diffuseMapPath); } catch { }
                         }
                     }
                     catch (Exception ex)
@@ -208,6 +236,8 @@ namespace Editors.ImportExport.Exporting.Exporters
 
                 if (File.Exists(exportedPath))
                 {
+                    // Ensure exported PNG is high-quality (32bpp, proper encoding)
+                    try { EnsurePngHighQuality(exportedPath); } catch { }
                     // Load the normal map and create displacement map
                     using (var normalImage = new Bitmap(exportedPath))
                     {
@@ -241,6 +271,8 @@ namespace Editors.ImportExport.Exporting.Exporters
 
                 // Export DDS to PNG using existing exporter
                 var exportedPath = _ddsToMaterialPngExporter.Export(texture.Value.Path, diffuseMapPath, convertToBlenderFormat: true);
+                // Ensure exported PNG is high-quality
+                try { EnsurePngHighQuality(exportedPath); } catch { }
                 return exportedPath;
             }
             catch (Exception ex)
@@ -345,6 +377,68 @@ namespace Editors.ImportExport.Exporting.Exporters
 
             tmp.Dispose();
             return dst;
+        }
+
+        private void EnsurePngHighQuality(string path)
+        {
+            try
+            {
+                using var bmp = new Bitmap(path);
+                using var high = new Bitmap(bmp.Width, bmp.Height, PixelFormat.Format32bppArgb);
+                using var g = Graphics.FromImage(high);
+                g.CompositingMode = CompositingMode.SourceCopy;
+                g.CompositingQuality = CompositingQuality.HighQuality;
+                g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                g.SmoothingMode = SmoothingMode.HighQuality;
+                g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                g.DrawImage(bmp, 0, 0, high.Width, high.Height);
+
+                var encoder = ImageCodecInfo.GetImageEncoders().First(c => c.FormatID == ImageFormat.Png.Guid);
+                var encParams = new System.Drawing.Imaging.EncoderParameters(1);
+                encParams.Param[0] = new System.Drawing.Imaging.EncoderParameter(System.Drawing.Imaging.Encoder.ColorDepth, (long)32);
+                high.Save(path, encoder, encParams);
+            }
+            catch
+            {
+                // ignore
+            }
+        }
+
+        private void PremultiplyDiffuseWithMask(string diffusePath, string maskPath, string outputPath)
+        {
+            try
+            {
+                using var diffuse = new Bitmap(diffusePath);
+                using var mask = new Bitmap(maskPath);
+
+                int w = Math.Min(diffuse.Width, mask.Width);
+                int h = Math.Min(diffuse.Height, mask.Height);
+                using var outBmp = new Bitmap(w, h, PixelFormat.Format32bppArgb);
+
+                for (int y = 0; y < h; y++)
+                {
+                    for (int x = 0; x < w; x++)
+                    {
+                        var dc = diffuse.GetPixel(x, y);
+                        var mc = mask.GetPixel(x, y);
+                        // use mask luminance as alpha
+                        float alpha = (mc.R * 0.299f + mc.G * 0.587f + mc.B * 0.114f) / 255f;
+                        // premultiply color
+                        int r = (int)(dc.R * alpha);
+                        int g = (int)(dc.G * alpha);
+                        int b = (int)(dc.B * alpha);
+                        int a = (int)(alpha * 255);
+                        outBmp.SetPixel(x, y, Color.FromArgb(a, r, g, b));
+                    }
+                }
+
+                outBmp.Save(outputPath, ImageFormat.Png);
+                try { EnsurePngHighQuality(outputPath); } catch { }
+            }
+            catch
+            {
+                // ignore
+            }
         }
     }
 
